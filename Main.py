@@ -26,6 +26,12 @@ app = FastAPI(lifespan=lifespan)
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 
+if not NOTION_TOKEN:
+    print("ALERTA CRÍTICO: O código não conseguiu ler a variável 'NOTION_TOKEN' do Render!")
+else:
+    print(f"Sucesso: Token detectado pelo código (Tamanho: {len(NOTION_TOKEN)} caracteres)")
+# -------------------------------------------
+
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
     "Content-Type": "application/json",
