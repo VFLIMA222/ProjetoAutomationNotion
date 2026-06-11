@@ -1,7 +1,27 @@
 import os
+import asyncio
 import requests
 import time
 from datetime import datetime
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+async def loop_automacao():
+    while True:
+        try:
+            checar_e_atualizar_projetos()
+        except Exception as e:
+            print(f"Erro detectado no loop: {e}")
+        
+        await asyncio.sleep(20)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(loop_automacao())
+    yield
+    task.cancel()
+
+app = FastAPI(lifespan=lifespan)
 
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 DATABASE_ID = os.environ.get("DATABASE_ID")
@@ -106,7 +126,6 @@ def checar_e_atualizar_projetos():
             except Exception as e:
                 print(f"Falha de comunicação no projeto '{nome_projeto}': {e}")
 
-if __name__ == "__main__":
-    print("Automação do Notion Iniciada (HTTP Puro)...")
-    checar_e_atualizar_projetos()
-    print("Varredura concluída.")
+@app.get("/")
+def index():
+    return {"status": "Automação rodando ativamente em segundo plano a cada 20 segundos"}
