@@ -2,7 +2,9 @@ import os
 import asyncio
 import requests
 import time
+import uvicorn
 from datetime import datetime
+import pytz
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
@@ -30,13 +32,16 @@ if not NOTION_TOKEN:
     print("ALERTA CRÍTICO: O código não conseguiu ler a variável 'NOTION_TOKEN' do Render!")
 else:
     print(f"Sucesso: Token detectado pelo código (Tamanho: {len(NOTION_TOKEN)} caracteres)")
-# -------------------------------------------
+
+
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
     "Content-Type": "application/json",
     "Notion-Version": "2022-06-28"
 }
+
+SCRIPT_START_TIME = datetime.now(pytz.utc)
 
 def obter_valor_status(propriedade):
     """Extrai o texto de campos do tipo Status ou Select de forma segura"""
@@ -46,6 +51,14 @@ def obter_valor_status(propriedade):
     if tipo in ["status", "select"] and propriedade.get(tipo):
         return propriedade[tipo]["name"]
     return None
+
+def obter_valor_texto(propriedade):
+    """Extrai o texto de campos do tipo Rich Text (texto puro) de forma segura"""
+    if propriedade and propriedade.get("type") == "rich_text":
+        lista_texto = propriedade.get("rich_text", [])
+        if lista_texto:
+            return lista_texto[0].get("plain_text", "")
+    return ""
 
 def obter_tipo_propriedade(propriedade):
     """Identifica se a coluna foi criada como 'status' ou 'select' no Notion"""
@@ -63,9 +76,18 @@ def checar_e_atualizar_projetos():
     except Exception as e:
         print(f"Erro de conexão: {e}")
         return
+    
+    fuso_br = pytz.timezone('America/Sao_Paulo')
 
     for pagina in paginas:
         page_id = pagina["id"]
+
+        last_edited_str = pagina.get("last_edited_time", "").replace("Z", "+00:00")
+        data_ultima_edicao = datetime.fromisoformat(last_edited_str)
+
+        if data_ultima_edicao < SCRIPT_START_TIME:
+            continue  
+            
         props = pagina["properties"]
 
         nome_projeto = ""
@@ -83,43 +105,58 @@ def checar_e_atualizar_projetos():
 
         tipo_arquivacao = obter_tipo_propriedade(props.get("Arquivação"))
         valor_arquivacao = obter_valor_status(props.get("Arquivação"))
+
+        valor_duracao = obter_valor_texto(props.get("Duração do Vídeo"))
         
-        data_finalizado = props["Finalizado em"]["date"]["start"] if "Finalizado em" in props and props["Finalizado em"]["date"] else None
-        data_recebido = props["Recebido"]["date"]["start"] if "Recebido" in props and props["Recebido"]["date"] else None
+        def extrair_data(propriedade):
+            if propriedade and propriedade.get("date"):
+                return propriedade["date"].get("start")
+            return None
+
+        data_finalizado = extrair_data(props.get("Finalizado Em"))
+        data_recebido = extrair_data(props.get("Recebido em"))
 
         alteracoes = {}
 
-        # REGRAS DA SUA AUTOMAÇÃO
+        # REGRAS DA AUTOMAÇÃO
 
-        # REGRA 1: Nome do projeto criado, mas a coluna 'Entrega' está vazia
-        # Ação: Muda 'Entrega' para 'Não Iniciada' E insere a data de hoje em 'Recebido'
         if not valor_entrega:
-            data_hoje = datetime.now().strftime("%Y-%m-%d")
-            
             alteracoes["Entrega"] = {tipo_entrega: {"name": "Não Iniciada"}}
-            alteracoes["Recebido em"] = {"date": {"start": data_hoje}}
-            print(f"Novo projeto detectado: '{nome_projeto}'. Definindo como 'Não Iniciado' e salvando data de recebimento.")
+            
+            if not data_recebido:
+                data_hoje = datetime.now(fuso_br).strftime("%Y-%m-%d")
+                alteracoes["Recebido em"] = {"date": {"start": data_hoje}}
+                print(f"Novo projeto '{nome_projeto}': Definido 'Não Iniciada' e data de recebimento salva.")
+            else:
+                print(f"Projeto '{nome_projeto}': Definido 'Não Iniciada' (Data de recebimento já existia e foi protegida).")
 
-        # REGRA 2: Se a coluna 'Entrega' foi marcada como 'Concluído' e a data de finalização está vazia
-        # Ação: Registra a data atual automaticamente em 'Finalizado em'
         if valor_entrega == "Concluído" and not data_finalizado:
-            data_hoje = datetime.now().strftime("%Y-%m-%d")
-            alteracoes["Status"] = {tipo_entrega: {"name": "Em Andamento"}}  # Garante que o status também seja atualizado para 'Em Andamento'
-            alteracoes["Finalizado em"] = {"date": {"start": data_hoje}}
-            print(f"Projeto '{nome_projeto}' finalizado! Gravando a data de conclusão ({data_hoje} e Status: 'Em Andamento').")
+            data_hoje = datetime.now(fuso_br).strftime("%Y-%m-%d")
+            
+            alteracoes["Status"] = {tipo_status: {"name": "Em andamento"}}  
+            alteracoes["Finalizado Em"] = {"date": {"start": data_hoje}}
+            print(f"Projeto '{nome_projeto}' concluído! Gravando data ({data_hoje}) e Status: 'Em andamento'.")
 
-        # REGRA 3: Se a coluna 'Status' foi marcada como 'Postado'
-        # Ação: Altera a coluna 'Arquivação' para 'Aguardando'
         if valor_status == "Postado":
             alteracoes["Arquivação"] = {tipo_arquivacao: {"name": "Aguardando"}}
 
-        # REGRA 4: Se a coluna 'Status' foi marcada como 'Recusado'
-        # Ação: Altera a coluna 'Arquivação' para 'Cancelado'
-        if valor_status == "Recusado":
+
+
+        if valor_entrega == "Cancelado" and (valor_status != "Recusado" or valor_duracao != "Cancelado"):
+            alteracoes["Status"] = {tipo_status: {"name": "Recusado"}}
             alteracoes["Arquivação"] = {tipo_arquivacao: {"name": "Cancelado"}}
-
-
-        # ENVIO DAS ATUALIZAÇÕES PARA A API DO NOTION
+            
+            alteracoes["Duração do Vídeo"] = {
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": "Cancelado"
+                        }
+                    }
+                ]
+            }
+            print(f"Projeto '{nome_projeto}' cancelado! Alterando Status para 'Recusado' e escrevendo 'Cancelado' em Duração do Vídeo.")
 
         if alteracoes:
             url_update = f"https://api.notion.com/v1/pages/{page_id}"
@@ -134,4 +171,7 @@ def checar_e_atualizar_projetos():
 
 @app.get("/")
 def index():
-    return {"status": "Automação rodando ativamente em segundo plano a cada 20 segundos"}
+    return {"status": "Automação rodando ativamente em segundo plano"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)
