@@ -169,8 +169,8 @@ def checar_e_atualizar_projetos():
             except Exception as e:
                 print(f"Falha de comunicação no projeto '{nome_projeto}': {e}")
 
-@app.route("/", methods=["GET", "HEAD"])
-def index():
+@app.router("/", methods=["GET", "HEAD"])
+def index(request):
     return {"status": "Automação rodando ativamente em segundo plano"}
 
 if __name__ == "__main__":
