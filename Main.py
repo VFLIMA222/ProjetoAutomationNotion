@@ -169,9 +169,13 @@ def checar_e_atualizar_projetos():
             except Exception as e:
                 print(f"Falha de comunicação no projeto '{nome_projeto}': {e}")
 
-@app.router("/", methods=["GET", "HEAD"])
-def index(request):
-    return {"status": "Automação rodando ativamente em segundo plano"}
+@app.get("/")
+def index():
+    return {"status": "Automação rodando ativamente em segundo plano a cada 20 segundos"}
+
+@app.head("/")
+def index_head():
+    return None
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
